@@ -50,6 +50,8 @@ const BUFFER = 10;              // frames a too-early tap stays queued
 let VW = 384;                   // virtual width, recomputed on resize
 let scale = 2, offX = 0, offY = 0, dpr = 1;
 let portraitBlock = false;
+let portraitNag = 0;              // counts up while in portrait, then shuts up
+const PORTRAIT_NAG = 300;         // 5s of "turn your phone", then play regardless
 
 const canvas = document.getElementById("c");
 const ctx = canvas.getContext("2d", { alpha: false });
@@ -147,6 +149,18 @@ function drawGlyph(ch, x, y, px, color) {
 
 function drawTextCentered(str, cx, y, px, color, shadow) {
   drawText(str, Math.round(cx - textWidth(String(str), px) / 2), y, px, color, shadow);
+}
+
+/* Same, but shrinks until it fits the view. The virtual width changes with the
+   screen's aspect — a phone held upright gives a much narrower stage — so any
+   full-width headline has to be allowed to step down a size rather than run
+   off both edges. */
+function drawTextFit(str, cx, y, px, color, shadow, pad) {
+  const maxW = VW - (pad == null ? 10 : pad);
+  let p = px;
+  while (p > 0.7 && textWidth(String(str), p) > maxW) p -= 0.1;
+  drawTextCentered(str, cx, y, p, color, shadow);
+  return p;
 }
 
 /* =========================================================================
@@ -682,9 +696,13 @@ function resetRun() {
    ======================================================================= */
 function tap() {
   audioInit();
-  /* a tap during the intro skips ahead rather than starting the run, so an
+  /* a tap during the intro advances it rather than starting the run, so an
      impatient tapper can't accidentally miss the title screen entirely */
-  if (mode === "intro") { mode = "start"; return; }
+  if (mode === "intro") {
+    if (introT < INTRO_HOLD - 1) introT = INTRO_HOLD - 1;   // open the photos now
+    else mode = "start";                                    // already opening: skip
+    return;
+  }
   if (mode === "start") { mode = "play"; resetRun(); SFX.start(); return; }
   if (mode === "win") { if (winTimer > 90) { mode = "start"; } return; }
   player.buffered = BUFFER;
@@ -735,11 +753,14 @@ function hazardAhead(x) {
    UPDATE
    ======================================================================= */
 /* ---------------------------------------------------------------- intro ---
-   Beat 1  (0.0-1.1s)  the photo sits there, whole
-   Beat 2  (1.1-1.9s)  it splits down the middle and the halves swing open
-   Beat 3  (1.9-4.2s)  HAPPY BIRTHDAY BOWEN behind it, balloons everywhere
-   then it hands over to the title screen. A tap skips straight through.     */
-const INTRO_HOLD  = 66;
+   Beat 1  (0-8s)      the two photos sit there, whole
+   Beat 2  (8.0-8.8s)  they split down the middle and swing open
+   Beat 3  (8.8-11.3s) HAPPY BIRTHDAY BOWEN behind them, balloons everywhere
+   then it hands over to the title screen.
+
+   A tap during beat 1 opens the photos there and then; a tap after that
+   skips to the title screen. So the 8s is a ceiling, never a wait.          */
+const INTRO_HOLD  = 480;
 const INTRO_OPEN  = 48;
 const INTRO_TITLE = 150;
 const INTRO_END   = INTRO_HOLD + INTRO_OPEN + INTRO_TITLE;
@@ -781,7 +802,7 @@ function drawIntro() {
   drawSky();
   for (let i = 0; i < 7; i++) drawCloud(20 + i * 62, 12 + (i % 3) * 26, 1 + (i % 2) * 0.4);
   ctx.fillStyle = GROUND_TOP; ctx.fillRect(0, GROUND_Y, VW, 5);
-  ctx.fillStyle = GROUND_A; ctx.fillRect(0, GROUND_Y + 5, VW, VH - GROUND_Y);
+  ctx.fillStyle = GROUND_A; ctx.fillRect(0, GROUND_Y + 5, VW, VH + 200 - GROUND_Y);
 
   const cx = VW / 2;
   const open = t <= INTRO_HOLD ? 0 : Math.min(1, (t - INTRO_HOLD) / INTRO_OPEN);
@@ -795,8 +816,11 @@ function drawIntro() {
     ctx.save();
     ctx.translate(cx, 62);
     ctx.scale(pop, pop);
-    drawTextCentered("HAPPY BIRTHDAY", 0, -30, 2.8, "#ffffff", "#1d3a7a");
-    drawTextCentered("BOWEN", 0, -6, 5.4, "#ffd93b", "#a8531a");
+    /* this text is drawn inside a scale(pop), so shrink the width it has to
+       fit into by the same factor or the pop-in would overflow the view */
+    const popPad = VW - VW / pop;
+    drawTextFit("HAPPY BIRTHDAY", 0, -30, 2.8, "#ffffff", "#1d3a7a", popPad + 10);
+    drawTextFit("BOWEN", 0, -6, 5.4, "#ffd93b", "#a8531a", popPad + 10);
     ctx.restore();
     ctx.globalAlpha = 1;
   }
@@ -842,6 +866,12 @@ function drawIntro() {
     }
   }
 
+  /* eight seconds is a long time to look at a still without knowing you can
+     move it along, so offer the tap once they've had a proper look */
+  if (t > 150 && t < INTRO_HOLD && Math.floor(t / 26) % 2 === 0) {
+    drawTextFit("TAP TO OPEN", cx, VH - 15, 1.6, "#ffffff", "#1d3a7a");
+  }
+
   if (t > INTRO_END - 30) {
     ctx.globalAlpha = Math.max(0, 1 - (t - (INTRO_END - 30)) / 30);
     ctx.globalAlpha = 1;
@@ -851,6 +881,7 @@ function drawIntro() {
 function update() {
   frame++;
   bobble += (mode === "play" && !player.onGround) ? 0.08 : 0.19;
+  if (portraitBlock) portraitNag++;
 
   if (mode === "intro") {
     introT++;
@@ -1092,7 +1123,7 @@ function drawScenery() {
 }
 
 function drawGround() {
-  const bottom = VH + 60;
+  const bottom = VH + 200;
   for (const g of level.grounds) {
     const x0 = g.x0 - cam, x1 = g.x1 - cam;
     if (x1 < -8 || x0 > VW + 8) continue;
@@ -1269,20 +1300,20 @@ function drawStartScreen() {
 
   /* ground strip */
   ctx.fillStyle = GROUND_TOP; ctx.fillRect(0, GROUND_Y, VW, 5);
-  ctx.fillStyle = GROUND_A; ctx.fillRect(0, GROUND_Y + 5, VW, VH - GROUND_Y);
+  ctx.fillStyle = GROUND_A; ctx.fillRect(0, GROUND_Y + 5, VW, VH + 200 - GROUND_Y);
   ctx.fillStyle = GROUND_C;
-  for (let ty = GROUND_Y + 5 + TS; ty < VH; ty += TS) ctx.fillRect(0, ty, VW, 1);
+  for (let ty = GROUND_Y + 5 + TS; ty < VH + 200; ty += TS) ctx.fillRect(0, ty, VW, 1);
   ctx.fillStyle = GROUND_B;
-  for (let tx = 0; tx < VW; tx += TS) ctx.fillRect(tx, GROUND_Y + 5, 1, VH - GROUND_Y);
+  for (let tx = 0; tx < VW; tx += TS) ctx.fillRect(tx, GROUND_Y + 5, 1, VH + 200 - GROUND_Y);
 
   /* title */
   const cx = VW / 2;
   const bounce = Math.round(Math.sin(frame * 0.05) * 2);
 
-  drawTextCentered("HAPPY BIRTHDAY", cx, 12 + bounce, 2.8, "#ffffff", "#1d3a7a");
-  drawTextCentered("BOWEN", cx, 34 + bounce, 5.2, "#ffd93b", "#a8531a");
-  drawTextCentered("LOVE UNCLE KYLE", cx, 78, 2.2, "#ffffff", "#1d3a7a");
-  drawTextCentered("TAP THE SCREEN TO JUMP", cx, 100, 1.8, "#ffd93b", "#1d3a7a");
+  drawTextFit("HAPPY BIRTHDAY", cx, 12 + bounce, 2.8, "#ffffff", "#1d3a7a");
+  drawTextFit("BOWEN", cx, 34 + bounce, 5.2, "#ffd93b", "#a8531a");
+  drawTextFit("LOVE UNCLE KYLE", cx, 78, 2.2, "#ffffff", "#1d3a7a");
+  drawTextFit("TAP THE SCREEN TO JUMP", cx, 100, 1.8, "#ffd93b", "#1d3a7a");
 
   /* Bowen on the left, a Kyle-headed dino on the right */
   const bx = Math.round(cx - 80), dxp = Math.round(cx + 52);
@@ -1294,7 +1325,7 @@ function drawStartScreen() {
   drawKyleOn(dxp, GROUND_Y - DINO_H + bob);
 
   if (Math.floor(frame / 26) % 2 === 0) {
-    drawTextCentered("TAP TO PLAY", cx, VH - 24, 2.4, "#ffffff", "#1d3a7a");
+    drawTextFit("TAP TO PLAY", cx, VH - 24, 2.4, "#ffffff", "#1d3a7a");
   }
 }
 
@@ -1302,9 +1333,9 @@ function drawWinScreen() {
   drawSky();
   for (let i = 0; i < 7; i++) drawCloud(20 + i * 62, 14 + (i % 3) * 24, 1 + (i % 2) * 0.4);
   ctx.fillStyle = GROUND_TOP; ctx.fillRect(0, GROUND_Y, VW, 5);
-  ctx.fillStyle = GROUND_A; ctx.fillRect(0, GROUND_Y + 5, VW, VH - GROUND_Y);
+  ctx.fillStyle = GROUND_A; ctx.fillRect(0, GROUND_Y + 5, VW, VH + 200 - GROUND_Y);
   ctx.fillStyle = GROUND_C;
-  for (let ty = GROUND_Y + 5 + TS; ty < VH; ty += TS) ctx.fillRect(0, ty, VW, 1);
+  for (let ty = GROUND_Y + 5 + TS; ty < VH + 200; ty += TS) ctx.fillRect(0, ty, VW, 1);
 
   const cx = VW / 2;
   const wbx = Math.round(cx - BOWEN_W / 2), wby = GROUND_Y - BOWEN_BODY_H;
@@ -1312,10 +1343,10 @@ function drawWinScreen() {
   drawBowenHead(wbx + BOWEN_W / 2, wby + 3, 1.4);      // extra happy wobble
 
   const bounce = Math.round(Math.sin(frame * 0.09) * 2);
-  drawTextCentered("CONGRATS BOWEN!", cx, 14 + bounce, 3, "#ffffff", "#1d3a7a");
-  drawTextCentered("YOU WIN!", cx, 42 + bounce, 5, "#ffd93b", "#a8531a");
-  drawTextCentered("YOU GOT " + coins + " COINS", cx, 84, 2, "#ffffff", "#1d3a7a");
-  drawTextCentered("LOVE UNCLE KYLE", cx, 102, 2.2, "#ffffff", "#1d3a7a");
+  drawTextFit("CONGRATS BOWEN!", cx, 14 + bounce, 3, "#ffffff", "#1d3a7a");
+  drawTextFit("YOU WIN!", cx, 42 + bounce, 5, "#ffd93b", "#a8531a");
+  drawTextFit("YOU GOT " + coins + " COINS", cx, 84, 2, "#ffffff", "#1d3a7a");
+  drawTextFit("LOVE UNCLE KYLE", cx, 102, 2.2, "#ffffff", "#1d3a7a");
 
   /* confetti over the top */
   for (const p of confetti) {
@@ -1328,13 +1359,15 @@ function drawWinScreen() {
   }
 
   if (winTimer > 90 && Math.floor(frame / 26) % 2 === 0) {
-    drawTextCentered("TAP TO PLAY AGAIN", cx, VH - 22, 2, "#ffffff", "#1d3a7a");
+    drawTextFit("TAP TO PLAY AGAIN", cx, VH - 22, 2, "#ffffff", "#1d3a7a");
   }
 }
 
 function draw() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = "#000";
+  /* sky, not black: in portrait the view is letterboxed, and sky-coloured
+     bands read as part of the picture rather than as a broken screen */
+  ctx.fillStyle = SKY;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.setTransform(scale * dpr, 0, 0, scale * dpr, offX * dpr, offY * dpr);
   ctx.imageSmoothingEnabled = false;
@@ -1356,24 +1389,30 @@ function draw() {
     drawHUD();
   }
 
-  if (portraitBlock) {
-    /* cover the whole device surface, letterbox included, so it reads as one
-       deliberate screen rather than a dimmed strip floating in black */
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = "#121a33";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.setTransform(scale * dpr, 0, 0, scale * dpr, offX * dpr, offY * dpr);
+  /* Portrait is a worse view, not a blocked one — this suggests turning the
+     phone, then gets out of the way and lets them play either way. */
+  if (portraitBlock && portraitNag < PORTRAIT_NAG) {
+    const a = Math.min(1, (PORTRAIT_NAG - portraitNag) / 45);
+    /* Portrait letterboxes the stage, which leaves an empty sky band above it.
+       Put the notice up there so it never sits over the game; only fall back
+       to the bottom of the stage if there is no band to use. */
+    const band = offY / scale;
+    const by = band > 46 ? -26 : VH - 30;
     const cx = VW / 2;
-    drawTextCentered("TURN YOUR PHONE", cx, VH / 2 - 26, 2.2, "#ffffff", "#1d3a7a");
-    drawTextCentered("SIDEWAYS TO PLAY", cx, VH / 2 - 4, 2.2, "#ffffff", "#1d3a7a");
-    /* a little rotating phone */
-    const r = Math.sin(frame * 0.05) * 0.5;
+    const msg = "TURN YOUR PHONE SIDEWAYS";
+    ctx.globalAlpha = a * 0.8;
+    ctx.fillStyle = "#121a33";
+    ctx.fillRect(-VW, by - 9, VW * 3, 26);
+    ctx.globalAlpha = a;
+    const p = drawTextFit(msg, cx + 9, by, 1.7, "#ffffff", "#1d3a7a", 32);
+    /* a little rocking phone next to the words */
     ctx.save();
-    ctx.translate(cx, VH / 2 + 34);
-    ctx.rotate(r);
-    ctx.fillStyle = "#ffffff"; ctx.fillRect(-8, -14, 16, 28);
-    ctx.fillStyle = "#1d3a7a"; ctx.fillRect(-6, -11, 12, 22);
+    ctx.translate(cx + 9 - textWidth(msg, p) / 2 - 9, by + 5);
+    ctx.rotate(Math.sin(frame * 0.06) * 0.5);
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(-5, -8, 10, 16);
+    ctx.fillStyle = "#1d3a7a"; ctx.fillRect(-4, -6, 8, 12);
     ctx.restore();
+    ctx.globalAlpha = 1;
   }
 }
 
