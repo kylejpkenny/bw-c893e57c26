@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>sprite check</title>
+<style>
+  body{background:#5c94fc;margin:0;padding:0;font:12px monospace;color:#fff}
+  canvas#o{image-rendering:pixelated;display:block}
+  iframe{position:absolute;left:-9999px;width:400px;height:200px}
+</style>
+</head><body>
+<canvas id="o" width="800" height="400"></canvas>
+<iframe id="f" src="index.html"></iframe>
+<script>
+const Z = 9;
+document.getElementById("f").onload = () => {
+  const SPR = document.getElementById("f").contentWindow.SPR;
+  const g = document.getElementById("o").getContext("2d");
+  g.imageSmoothingEnabled = false;
+  const blit = (cv, x, y) => g.drawImage(cv, 0, 0, cv.width, cv.height, x, y, cv.width * Z, cv.height * Z);
+  const label = (t, x, y) => { g.fillStyle = "#fff"; g.font = "12px monospace"; g.fillText(t, x, y); };
+
+  const BASE = 330;                       // shared "ground line" for every sprite
+
+  let x = 14;
+  const stand = (cv, name) => {
+    blit(cv, x, BASE - cv.height * Z);
+    label(name + " " + cv.width + "x" + cv.height, x, BASE + 16);
+    x += cv.width * Z + 26;
+  };
+
+  stand(SPR.bowenRun[0], "run0");
+  stand(SPR.dino, "dino");
+
+  /* the assembled creature, exactly as the game composes it */
+  const dx = x, dy = BASE - SPR.dino.height * Z;
+  blit(SPR.dino, dx, dy);
+  blit(SPR.kyle, dx + (8 - SPR.kyle.width / 2) * Z, dy + (4 - SPR.kyle.height) * Z);
+  label("in game", dx, BASE + 16);
+  x += SPR.dino.width * Z + 26;
+
+  stand(SPR.dinoSquash, "squash");
+  stand(SPR.coin[0], "coin");
+};
+</script>
+</body></html>
