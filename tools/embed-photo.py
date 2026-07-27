@@ -40,10 +40,48 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 HTML = ROOT / "index.html"
 
 SLOTS = {
-    "bowen": ("BOWEN_FACE_SRC", 128),
-    "kyle":  ("KYLE_FACE_SRC", 128),
-    "intro": ("INTRO_PHOTO_SRC", 420),
+    "bowen":       ("BOWEN_FACE_SRC", 128),
+    "kyle":        ("KYLE_FACE_SRC", 128),
+    "intro-left":  ("INTRO_PHOTO_L_SRC", 300),
+    "intro-right": ("INTRO_PHOTO_R_SRC", 300),
 }
+
+
+def cut_background(img, tol=26):
+    """Knock out the background by flooding inwards from the border.
+
+    A plain white-threshold would also eat teeth and eye whites, so this only
+    clears pixels reachable from the edge, which leaves the subject intact.
+    """
+    from collections import deque
+    img = img.convert("RGBA")
+    w, h = img.size
+    px = img.load()
+    seen = bytearray(w * h)
+    q = deque()
+
+    def like_edge(p, ref):
+        return abs(p[0] - ref[0]) <= tol and abs(p[1] - ref[1]) <= tol and abs(p[2] - ref[2]) <= tol
+
+    corners = [px[0, 0], px[w - 1, 0], px[0, h - 1], px[w - 1, h - 1]]
+    ref = max(corners, key=lambda c: c[0] + c[1] + c[2])       # the lightest corner
+
+    for x in range(w):
+        for y in (0, h - 1):
+            if not seen[y * w + x] and like_edge(px[x, y], ref):
+                seen[y * w + x] = 1; q.append((x, y))
+    for y in range(h):
+        for x in (0, w - 1):
+            if not seen[y * w + x] and like_edge(px[x, y], ref):
+                seen[y * w + x] = 1; q.append((x, y))
+
+    while q:
+        x, y = q.popleft()
+        px[x, y] = (px[x, y][0], px[x, y][1], px[x, y][2], 0)
+        for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if 0 <= nx < w and 0 <= ny < h and not seen[ny * w + nx] and like_edge(px[nx, ny], ref):
+                seen[ny * w + nx] = 1; q.append((nx, ny))
+    return img
 
 
 def circle_mask(img):
@@ -68,6 +106,10 @@ def main():
     ap.add_argument("--crop", help="L,T,R,B in source pixels")
     ap.add_argument("--width", type=int)
     ap.add_argument("--circle", action="store_true")
+    ap.add_argument("--cutout", action="store_true",
+                    help="knock out a plain background by flooding in from the edges")
+    ap.add_argument("--tol", type=int, default=26, help="--cutout colour tolerance")
+    ap.add_argument("--quality", type=int, default=82, help="JPEG quality for opaque images")
     ap.add_argument("--no-trim", action="store_true")
     args = ap.parse_args()
 
@@ -80,6 +122,8 @@ def main():
         if len(box) != 4:
             sys.exit("--crop needs exactly four numbers: L,T,R,B")
         img = img.crop(box)
+    if args.cutout:
+        img = cut_background(img, args.tol)
     if args.circle:
         img = circle_mask(img)
     if not args.no_trim:
@@ -89,9 +133,18 @@ def main():
 
     img = img.resize((width, round(img.height * width / img.width)), Image.LANCZOS)
 
+    # transparency needs PNG; a plain photo is far smaller as JPEG
+    alpha = img.split()[3]
+    transparent = alpha.getextrema()[0] < 250
+
     buf = io.BytesIO()
-    img.save(buf, "PNG", optimize=True)
-    uri = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    if transparent:
+        img.save(buf, "PNG", optimize=True)
+        mime = "image/png"
+    else:
+        img.convert("RGB").save(buf, "JPEG", quality=args.quality, optimize=True, progressive=True)
+        mime = "image/jpeg"
+    uri = f"data:{mime};base64," + base64.b64encode(buf.getvalue()).decode()
 
     html = HTML.read_text()
     pattern = re.compile(r'(const\s+' + var + r'\s*=\s*)"[^"]*"')
